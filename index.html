@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+<meta charset="UTF-8">
+<title>雙 micro:bit × MediaPipe Pose 左右手獨立攻擊 飛鼠大亂鬥 終極完美版</title>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
+
+<style>
+  body { margin: 0; padding: 0; background: #000; overflow: hidden; font-family: "Microsoft JhengHei", sans-serif; }
+  #container { position: relative; width: 100vw; height: 100vh; }
+  video, canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; }
+  #video { transform: scaleX(-1); }
+  #overlay { pointer-events: none; z-index: 10; }
+
+  .zone {
+    position: absolute; width: 48%; height: 48%;
+    border: 6px solid rgba(100,200,255,0.6); box-sizing: border-box;
+    transition: all 0.4s;
+  }
+  #zone1 { top: 2%; left: 2%; }
+  #zone2 { top: 2%; right: 2%; }
+  #zone3 { bottom: 2%; left: 2%; }
+  #zone4 { bottom: 2%; right: 2%; }
+
+  .active {
+    background: rgba(255, 40, 40, 0.95) !important;
+    border-color: #ff0000 !important;
+    box-shadow: 0 0 130px #ff0044;
+    animation: pulse 0.6s infinite alternate;
+  }
+  @keyframes pulse { from { opacity: 0.85; } to { opacity: 1; } }
+
+  #hpBar {
+    position: absolute; top: 20px; left: 50%; transform: translateX(-50%);
+    width: 70%; height: 55px; background: #222; border-radius: 28px;
+    overflow: hidden; border: 6px solid #fff; z-index: 20;
+  }
+  #hpFill {
+    height: 100%; width: 100%; background: linear-gradient(to right, #ff0033, #33ff99);
+    transition: width 0.5s ease;
+  }
+
+  #momonga {
+    position: absolute; bottom: 15px; left: 50%; transform: translateX(-50%);
+    width: 340px; height: 340px;
+    background: url('https://static.wikia.nocookie.net/chiikawa/images/a/a0/Momonga.png/revision/latest/thumbnail/width/360/height/360?cb=20240921205329') center/contain no-repeat;
+    transition: transform 0.8s ease; z-index: 15;
+  }
+
+  #leftPower, #rightPower {
+    position: absolute; top: 20px; padding: 16px 36px;
+    background: rgba(0,0,0,0.85); color: white; font-size: 44px; font-weight: bold;
+    border: 6px solid white; border-radius: 25px; z-index: 30;
+    text-shadow: 0 0 25px #fff; box-shadow: 0 0 40px rgba(255,255,255,0.4);
+    backdrop-filter: blur(8px);
+  }
+  #leftPower  { left: 20px; }
+  #rightPower { right: 20px; }
+
+  #damageText {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    font-size: 180px; font-weight: bold;
+    text-shadow: 0 0 60px #ff0000, 12px 12px 30px #000;
+    pointer-events: none; z-index: 40; opacity: 0; user-select: none;
+  }
+
+  #gameOver {
+    position: absolute; inset: 0; background: rgba(0,0,0,0.98);
+    color: white; font-size: 110px; display: none;
+    align-items: center; justify-content: center; flex-direction: column; z-index: 100;
+  }
+
+  #status {
+    position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+    padding: 20px 50px; background: rgba(0,0,0,0.8); border-radius: 30px;
+    color: #0f0; font-weight: bold; font-size: 28px; z-index: 50; cursor: pointer;
+    border: 4px solid #0f0; text-shadow: 0 0 20px #0f0;
+  }
+
+  #toggleSkeleton {
+    position: absolute; bottom: 20px; right: 20px;
+    padding: 18px 36px; background: rgba(255,255,255,0.25); color: white;
+    border: 4px solid white; border-radius: 25px; font-size: 22px; font-weight: bold;
+    cursor: pointer; z-index: 60; backdrop-filter: blur(12px);
+  }
+
+  button {
+    margin-top: 90px; padding: 45px 110px; font-size: 56px;
+    background: #00ff88; color: #000; border: none; border-radius: 50px;
+    cursor: pointer; font-weight: bold; box-shadow: 0 0 70px #00ff88;
+  }
+</style>
+</head>
+<body>
+
+<div id="container">
+  <video id="video" autoplay playsinline muted></video>
+  <canvas id="overlay"></canvas>
+
+  <div class="zone" id="zone1"></div>
+  <div class="zone" id="zone2"></div>
+  <div class="zone" id="zone3"></div>
+  <div class="zone" id="zone4"></div>
+
+  <div id="hpBar"><div id="hpFill"></div></div>
+  <div id="momonga"></div>
+  <div id="leftPower">左攻擊：0</div>
+  <div id="rightPower">右攻擊：0</div>
+  <div id="damageText"></div>
+  
+  <div id="status" onclick="connectBothMicrobits()">點我連接 2 個 micro:bit</div>
+  <div id="toggleSkeleton" onclick="toggleSkeleton()">隱藏骨架</div>
+
+  <div id="gameOver">
+    <div>飛鼠被你們雙手打成原子了！！！</div>
+    <button onclick="restartGame()">再虐一隻！</button>
+  </div>
+</div>
+
+<script>
+// ================ 遊戲變數 ================
+let monsterHP = 100, maxHP = 100;
+let currentActiveZone = null;
+let leftPower = 0, rightPower = 0;
+let lastUpdatedHand = null;  // 記錄最後更新攻擊力的手
+let isLeftConnected = false, isRightConnected = false;
+let showSkeleton = true;
+
+// ================ 切換骨架顯示 ================
+function toggleSkeleton() {
+  showSkeleton = !showSkeleton;
+  document.getElementById("toggleSkeleton").textContent = showSkeleton ? "隱藏骨架" : "顯示骨架";
+}
+
+// ================ 雙 micro:bit 連接 ================
+const UART_SERVICE_UUID           = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
+const UART_TX_CHARACTERISTIC_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";
+
+async function connectMicrobit(hand) {
+  try {
+    const device = await navigator.bluetooth.requestDevice({
+      filters: [{ namePrefix: "BBC micro:bit" }],
+      optionalServices: [UART_SERVICE_UUID]
+    });
+
+    const server = await device.gatt.connect();
+    const service = await server.getPrimaryService(UART_SERVICE_UUID);
+    const txChar = await service.getCharacteristic(UART_TX_CHARACTERISTIC_UUID);
+    await txChar.startNotifications();
+
+    txChar.addEventListener("characteristicvaluechanged", e => {
+      const text = new TextDecoder().decode(e.target.value).trim();
+      const power = parseInt(text);
+      if (!isNaN(power) && power > 50) {
+        const attack = Math.floor(power / 200);
+        if (hand === "left") {
+          leftPower = attack;
+          document.getElementById("leftPower").textContent = `左攻擊：${attack}`;
+        } else {
+          rightPower = attack;
+          document.getElementById("rightPower").textContent = `右攻擊：${attack}`;
+        }
+        lastUpdatedHand = hand;  // 記錄是最後哪隻手更新
+      }
+    });
+
+    if (hand === "left") isLeftConnected = true;
+    else isRightConnected = true;
+
+    if (isLeftConnected && isRightConnected) {
+      document.getElementById("status").textContent = "雙 micro:bit 已連接！左右開弓！";
+      startNewRound();
+    }
+  } catch (err) {
+    document.getElementById("status").textContent = `連接失敗：${err.message}`;
+  }
+}
+
+async function connectBothMicrobits() {
+  document.getElementById("status").textContent = "請先連接左手 micro:bit...";
+  await connectMicrobit("left");
+  if (isLeftConnected) {
+    document.getElementById("status").textContent = "左手OK！現在連接右手 micro:bit...";
+    await connectMicrobit("right");
+  }
+}
+
+// ================ 扣血動畫 ================
+function showDamage(damage, color = "#ffffff") {
+  const el = document.getElementById("damageText");
+  el.textContent = `-${damage}`;
+  el.style.color = color;
+  el.style.opacity = 1;
+  el.style.transform = "translate(-50%, -50%) translateY(-220px) scale(2.4)";
+  el.style.transition = "all 1.2s ease-out";
+
+  setTimeout(() => {
+    el.style.opacity = 0;
+    el.style.transform = "translate(-50%, -50%) translateY(0) scale(1)";
+  }, 100);
+}
+
+// ================ MediaPipe Pose + 完美判定 ================
+const video = document.getElementById('video');
+const canvas = document.getElementById('overlay');
+const ctx = canvas.getContext('2d');
+
+function onResults(results) {
+  ctx.save();
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.translate(canvas.width, 0);
+  ctx.scale(-1, 1);
+
+  if (results.poseLandmarks) {
+    const lm = results.poseLandmarks;
+
+    if (showSkeleton) {
+      drawConnectors(ctx, lm, [[13,15],[15,17],[17,19],[19,21]], {color: '#00FFFF', lineWidth: 14});
+      drawConnectors(ctx, lm, [[14,16],[16,18],[18,20],[20,22]], {color: '#FF00FF', lineWidth: 14});
+      drawLandmarks(ctx, lm.slice(13,23), {color: '#00FFFF', radius: 16});
+      drawLandmarks(ctx, lm.slice(13,23), {color: '#FF00FF', radius: 16});
+    }
+
+    const leftWrist = lm[15];
+    const rightWrist = lm[16];
+
+    if (leftWrist && rightWrist && leftWrist.visibility > 0.6 && rightWrist.visibility > 0.6) {
+      const lx = canvas.width - (leftWrist.x * canvas.width);
+      const ly = leftWrist.y * canvas.height;
+      const rx = canvas.width - (rightWrist.x * canvas.width);
+      const ry = rightWrist.y * canvas.height;
+
+      const nlx = lx / canvas.width, nly = ly / canvas.height;
+      const nrx = rx / canvas.width, nry = ry / canvas.height;
+
+      if (currentActiveZone && (leftPower > 0 || rightPower > 0)) {
+        let hit = false;
+        let dmg = 0;
+        let color = "#ffffff";
+
+        // 優先檢查「最後更新攻擊力的那隻手」
+        if (lastUpdatedHand === "left" && leftPower > 0 &&
+            ((currentActiveZone === "zone1" && nlx < 0.5 && nly < 0.5) ||
+             (currentActiveZone === "zone2" && nlx > 0.5 && nly < 0.5) ||
+             (currentActiveZone === "zone3" && nlx < 0.5 && nly > 0.5) ||
+             (currentActiveZone === "zone4" && nlx > 0.5 && nly > 0.5))) {
+          hit = true; dmg = leftPower; color = "#00ffff";
+        }
+        else if (lastUpdatedHand === "right" && rightPower > 0 &&
+            ((currentActiveZone === "zone1" && nrx < 0.5 && nry < 0.5) ||
+             (currentActiveZone === "zone2" && nrx > 0.5 && nry < 0.5) ||
+             (currentActiveZone === "zone3" && nrx < 0.5 && nry > 0.5) ||
+             (currentActiveZone === "zone4" && nrx > 0.5 && nry > 0.5))) {
+          hit = true; dmg = rightPower; color = "#ff00aa";
+        }
+
+        if (hit) {
+          hitMonster(dmg);
+          showDamage(dmg, color);
+          // 不清空攻擊力！讓它保留到下次搖
+        }
+      }
+    }
+  }
+  ctx.restore();
+}
+
+const pose = new Pose({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`});
+pose.setOptions({
+  modelComplexity: 1,
+  smoothLandmarks: true,
+  minDetectionConfidence: 0.7,
+  minTrackingConfidence: 0.7
+});
+pose.onResults(onResults);
+
+new Camera(video, {
+  onFrame: async () => await pose.send({image: video}),
+  width: 1280,
+  height: 720
+}).start();
+
+// ================ 遊戲核心 ================
+function updateHP() {
+  const percent = Math.max(0, monsterHP / maxHP * 100);
+  document.getElementById("hpFill").style.width = percent + "%";
+  const scale = 0.5 + (percent / 100) * 1.0;
+  document.getElementById("momonga").style.transform = `translateX(-50%) scale(${scale})`;
+  if (monsterHP <= 0) document.getElementById("gameOver").style.display = "flex";
+}
+
+function hitMonster(dmg) {
+  monsterHP = Math.max(0, monsterHP - dmg);
+  updateHP();
+  document.getElementById(currentActiveZone).classList.remove("active");
+  startNewRound();
+}
+
+function startNewRound() {
+  if (currentActiveZone) document.getElementById(currentActiveZone).classList.remove("active");
+  const zones = ["zone1","zone2","zone3","zone4"];
+  currentActiveZone = zones[Math.floor(Math.random()*4)];
+  setTimeout(() => {
+    document.getElementById(currentActiveZone).classList.add("active");
+  }, 400);
+}
+
+function restartGame() {
+  monsterHP = 100;
+  leftPower = rightPower = 0;
+  lastUpdatedHand = null;
+  document.getElementById("leftPower").textContent = "左攻擊：0";
+  document.getElementById("rightPower").textContent = "右攻擊：0";
+  updateHP();
+  document.getElementById("gameOver").style.display = "none";
+  startNewRound();
+}
+
+updateHP();
+</script>
+</body>
+</html>
